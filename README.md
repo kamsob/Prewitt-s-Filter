@@ -1,0 +1,1 @@
+A C# application allows the user to load an image, perform edge detection using the Prewitt algorithm with options to select the number of threads and the implementation library (C++ or Assembly), display the results, save them to a file, and view the processing time for the selected library.

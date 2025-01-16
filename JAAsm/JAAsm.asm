@@ -1,212 +1,224 @@
-.CODE
-FiltrAsm PROC
-
-applyPrewitt:
-    ; Input parameters:
-    ;   rcx - pointer to input image (GBR24)
-    ;   rdx - pointer to output image (GBR24)
-    ;   r8  - image width (width)
-    ;   r9  - image height (height)
-    mov eax, DWORD PTR[rsp + 40] ; start row in the thread
-    mov ebx, DWORD PTR[rsp + 48] ; end row in the thread
-
+.code
+FilterAsm PROC
+    ; rcx - input bitmap pointer, rdx - output bitmap pointer, r8 - width, r9 - height, stack - stride
+    ; push registers
+    push rbx
+    push rbp
+    push rsi
+    push rdi
     push r12
     push r13
     push r14
     push r15
-    push rdi
-    push rsi
 
-        ;r10 - iterator i
-        ;r11 - iterator j
-    imul r8, 3      ; R8 = width * 3 (because 3 bytes per pixel, GBR)
+    mov ebx, [rbp + 48]    
+    mov rsi, rbx        ; rsi - stride
+    sub rbx, r8         ; rbx - difference between stride and width
 
-    mov r12, r8
-    sub r12, 3      ; for comparison to skip the last column 
-    mov r13, rbx    ; setting the last processed row for comparison at the end of the loop
+    inc rcx
+    add rcx, rsi
+    inc rdx
+    add rdx, rsi
 
-    xor r10, r10    ; R10 = row iterator (i)
-    mov r10, rax    ; setting the row iterator to the first row to process
+    
+    mov r11, r8    ; r11 - i (column width-2)
+    dec r11
+    dec r11
+    mov r12, r9    ; r12 - j (line height-2)
+    dec r12
+    dec r12
+
+
+    cmp r12, 0
+    jle ENDLOOP
+CHECK_BEFORE_LOOP:
+    cmp r11, 8
+    jl LASTLOOP
+    cmp r11, 0
+    jle ENDLOOP
+
+MAINLOOP:
+; œrodka nie laduje bo i tak filtr = 0
+
+; xmm2 left top     xmm3 middle top     xmm4 right top
+; xmm5 left middle                      xmm6 right middle
+; xmm7 left down    xmm8 middle down    xmm9 right down
+
+; xmm0 and xmm1 results
+    pxor xmm0, xmm0   ; 0 to horizontal filter result
+    pxor xmm1, xmm1   ; 0 to vertical filter result
+
+    mov r10, rcx
+
+    dec r10
+    movq xmm5, QWORD PTR [r10]
+    pmovzxbw xmm5, xmm5
+    
+    sub r10, rsi
+    movq xmm2, QWORD PTR [r10]
+    pmovzxbw xmm2, xmm2
+    
+    inc r10
+    movq xmm3, QWORD PTR [r10]
+    pmovzxbw xmm3, xmm3
+
+    inc r10
+    movq xmm4, QWORD PTR [r10]
+    pmovzxbw xmm4, xmm4
+    
+    add r10, rsi
+    movq xmm6, QWORD PTR [r10]
+    pmovzxbw xmm6, xmm6
+    
+    add r10, rsi
+    movq xmm9, QWORD PTR [r10]
+    pmovzxbw xmm9, xmm9
+
+    dec r10
+    movq xmm8, QWORD PTR [r10]
+    pmovzxbw xmm8, xmm8
+
+    dec r10
+    movq xmm7, QWORD PTR [r10]
+    pmovzxbw xmm7, xmm7
+    
+    ;horizontal filter
+    psubw xmm0, xmm2
+    psubw xmm0, xmm5
+    psubw xmm0, xmm7
+
+    paddw xmm0, xmm4
+    paddw xmm0, xmm6
+    paddw xmm0, xmm9
+
+    ;vertizal filter
+    psubw xmm1, xmm2
+    psubw xmm1, xmm3
+    psubw xmm1, xmm4
+
+    paddw xmm1, xmm7
+    paddw xmm1, xmm8
+    paddw xmm1, xmm9
+
+    vpabsw xmm1, xmm1       ; module of each word
+    packuswb xmm1, xmm1     ; pack to bytes with saturation
+
+    movq QWORD PTR [rdx], xmm1 ; save to result bitmap  
+
+    add rcx, 8
+    add rdx, 8
+    sub r11, 8
+    
+    cmp r11, 0
+    jle NEXT_ROW
+    cmp r11, 8
+    jl LASTLOOP
+    
+    
+    jmp MAINLOOP
+    
+LASTLOOP:
+    mov rax, 0
+    mov r10, rcx
+    sub r10, rsi
+    dec r10
+    
+    mov r14, 0 ; result_vertical
+    mov r15, 0 ; result_horizontal
+    
+    mov al, [r10]
+    sub r15, rax
+    sub r14, rax
+
+
+    inc r10
+    mov al, [r10]
+    sub r14, rax
+
+
+    inc r10
+    mov al, [r10]
+    sub r14, rax
+    add r15, rax
+
+
+    add r10, rsi
+    mov al, [r10]
+    add r15, rax
+
+
+    sub r10, 2
+    mov al, [r10]
+    sub r15, rax
+
+    
+    add r10, rsi
+    mov al, [r10]
+    add r14, rax
+    sub r15, rax
+
+    
+    inc r10
+    mov al, [r10]
+    add r14, rax
+
+
+    inc r10
+    mov al, [r10]
+    add r14, rax
+    add r15, rax
+
+    mov rax, 0          ; Minimum value
+    cmp r14, rax        ; compare r14 with 0
+    jge IF_LARGER_THAN_ZERO    ; if r14 >= 0, jump to MORETHANZERO
+
+    neg r14
+
+IF_LARGER_THAN_ZERO:
+    mov rax, 255        ; Maximum value
+    cmp r14, rax
+    cmovg r14, rax      ; If r15 > 255, set r14 to 255
+
+    mov rax, r14
+    mov [rdx], al
+    
+    inc rcx
+    inc rdx 
+    dec r11
+    
+    cmp r11, 0
+    jle NEXT_ROW
+    jmp LASTLOOP
+
+    
+NEXT_ROW:
+    dec r12
+    cmp r12, 0
+    jle ENDLOOP
+
+    mov r11, r8     ; reset column iterator
+    dec r11
+    dec r11         ; r11 = width - 2
+    add rcx, rbx
+    inc rcx
+    inc rcx
+    add rdx, rbx
+    inc rdx
+    inc rdx
+    
+    jmp CHECK_BEFORE_LOOP
+    
+ENDLOOP:
    
-    imul rax, r8    ; start row * width
-    add rcx, rax    ; move pointer to input image to the start row
-    add rdx, rax    ; move pointer to output image to the start row
-outer_loop:
-        ; Prepare inner loop (column iteration)
-    mov rdi, rcx    ; RDI = pointer to input image (restore initial address)
-    mov rsi, rdx    ; RSI = pointer to output image (restore initial address)
-
-    xor r11, r11    ; R11 = column iterator (j)
-    add r11, 3      ; to skip the first column
-
-inner_loop:
-    
-    xor r15, r15
-    xorps xmm0, xmm0 
-    xorps xmm1, xmm1
-    xorps xmm3, xmm3
-    xorps xmm4, xmm4
-    xorps xmm5, xmm5
-    xorps xmm6, xmm6
-        ;adding 1st value from x filter (top left)
-    xor rax, rax
-    mov r14, r11
-    sub r14, r8
-    sub r14, 3 
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm3, r15, 0
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm3, r15, 4
-        ;adding 2nd value from x filter (top middle)
-    add r14, r8      ;move to the middle
-    mov r15b, byte PTR[rsi + r14] 
-    pinsrw xmm3, r15, 1
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm3, r15, 5
-        ;adding 3rd value from x filter (top right)
-    add r14, r8
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm3, r15, 2
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm3, r15, 6
-        ;adding x1+x2+x3 (1) x1+x2+x3(2)
-    phaddw  xmm3, xmm3
-    phaddw  xmm3, xmm3
-
-        ;subtracting 4th value from x filter (bottom left)
-    xor rax, rax
-    mov r14, r11 
-    sub r14, r8
-    add r14, 3 
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm4, r15, 0
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm4, r15, 4
-        ;subtracting 5th value from x filter (bottom middle)
-    add r14, r8
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm4, r15, 1
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm4, r15, 5
-        ;subtracting 6th value from x filter (bottom right)
-    add r14, r8
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm4, r15, 2
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm4, r15, 6
-        ;adding x4+x5+x6 (1) x4+x5+x6(2)
-    phaddw  xmm4, xmm4
-    phaddw  xmm4, xmm4
-    
-        ;adding 1st value from y filter (top left)
-    xor rax, rax
-    mov r14, r11 
-    sub r14, r8
-    sub r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm5, r15d, 0
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm5, r15d, 4
-        ;adding 2nd value from y filter (top middle)
-    add r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm5, r15d, 1
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm5, r15d, 5
-        ;adding 3rd value from y filter (top right)
-    add r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm5, r15d, 2
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm5, r15d, 6
-        ;adding y1+y2+y3 (1) y1+y2+y3 (2)
-    phaddw xmm5, xmm5
-    phaddw xmm5, xmm5
-
-        ;subtracting 4th value from y filter (bottom left)
-    xor rax, rax
-    mov r14, r11 
-    add r14, r8
-    sub r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm6, r15d, 0
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm6, r15d, 4
-        ;subtracting 5th value from y filter (bottom middle)
-    add r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm6, r15d, 1
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm6, r15d, 5
-        ;subtracting 6th value from y filter (bottom right)
-    add r14, 3
-    mov r15b, byte PTR[rsi + r14]
-    pinsrw xmm6, r15d, 2
-    mov r15b, byte PTR[rsi + r14 + 1]
-    pinsrw xmm6, r15d, 6
-        ;adding y4+y5+y6 (1) y4+y5+y6 (2)
-    phaddw xmm6, xmm6
-    phaddw xmm6, xmm6
-
-        ;Extracting into xmm1 and xmm0
-        ;xmm1 ---   y123(2) - x123(2) - y123(1) - x123(1)
-        ;xmm0 ---   y456(2) - x456(2) - y456(1) - x456(1)
-    pextrw  r15d, xmm3, 0
-    pinsrd xmm1, r15d, 0    ;x123 (1)
-    pextrw  r15d, xmm3, 1
-    pinsrd xmm1, r15d, 2    ;x123 (2)
-    pextrw r15d, xmm4, 0
-    pinsrd xmm0, r15d, 0    ;x456 (1)
-    pextrw r15d, xmm4, 1
-    pinsrd xmm0, r15d, 2    ;x456 (2)
-
-    pextrw  r15d, xmm5, 0
-    pinsrd xmm1, r15d, 1    ;y123 (1)
-    pextrw  r15d, xmm5, 1
-    pinsrd xmm1, r15d, 3    ;y123 (2)
-    pextrw r15d, xmm6, 0
-    pinsrd xmm0, r15d, 1    ;y456 (1)
-    pextrw r15d, xmm6, 1
-    pinsrd xmm0, r15d, 3    ;y456 (2)
-
-
-    subps xmm1, xmm0    ;operation x123-x456, y123-y456 on (1) and (2)
-    
-        ;gradX (1) - gradY (1) - gradX (2) - gradY (2)
-        ;Here we square, add, change to double, take square root, change to int 
-    pmulld xmm1, xmm1       ; square the values
-    phaddd xmm1, xmm1       ; add the values
-    cvtdq2pd    xmm1, xmm1  ; convert to double precision
-    sqrtpd  xmm1, xmm1      ; take square root of dp
-    cvtpd2dq  xmm1 ,xmm1    ; convert from dp to int
-    movd eax, xmm1          ; move to eax (1)
-    mov byte PTR[rdi + r11 ], al  
-    pextrd  eax, xmm1, 1    ;move to eax (2)
-    mov byte PTR[rdi + r11 + 1], al 
-
-        ; Increment column iterator (j)
-    add r11, 2      ; Add 2 because we compute 2 values in each loop
-    cmp r11, r12    ; check if end of row (second last column in row)
-    jl inner_loop
-
-        ; Move pointers to the next row
-    add     rcx, r8       ; pointer + width * 3
-    add     rdx, r8       ; pointer + width * 3
-
-    ; Increment row iterator (i)
-    inc     r10
-    cmp     r10, r13        ; Check if last row of the image
-    jl      outer_loop
-
-    ; End
-    pop rsi
-    pop rdi
     pop r15
     pop r14
     pop r13
     pop r12
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+
     ret
-
-FiltrAsm ENDP
-
+FilterAsm ENDP
 END
